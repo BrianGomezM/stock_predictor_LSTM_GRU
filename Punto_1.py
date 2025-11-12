@@ -7,8 +7,8 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
-
-
+import os
+from datetime import datetime
 # ===========================================================
 # 1. Cargar dataset (CORREGIDO para saltar líneas dañadas)
 # ===========================================================
@@ -99,10 +99,6 @@ def split_train_val_test(X, y):
     return X_train, y_train, X_val, y_val, X_test, y_test
 
 
-# ===========================================================
-# MAIN — Igual que el ejemplo (todo visible, paso a paso)
-# ===========================================================
-
 if __name__ == "__main__":
 
     print("Cargando datos.")
@@ -117,7 +113,9 @@ if __name__ == "__main__":
     # Gráfica con información completa
     # =======================================================
     print("\nGraficando MID.")
-
+    os.makedirs("graficas", exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    nombre_figura = f"graficas/Serie_MID_Apple_{timestamp}.png"
     plt.figure(figsize=(9, 6))
     plt.plot(df["Date"], df["Mid"].values, color="#317EDA", linewidth=1.5, label="Valor promedio (High + Low) / 2")
     plt.title("Evolución del valor promedio diario de la acción AAPL (Apple Inc.)", fontsize=12, fontweight="bold")
@@ -126,7 +124,7 @@ if __name__ == "__main__":
     plt.legend(loc="upper left", fontsize=9)
     plt.grid(alpha=0.3)
     plt.tight_layout()
-    plt.savefig("Serie_MID_Apple.png", dpi=300)  # ✅ Guarda la figura con buena resolución
+    plt.savefig(nombre_figura, dpi=300)
     plt.show()
 
     # =======================================================
