@@ -18,11 +18,14 @@
 ## 🧩 Instalación y configuración
 
     1. Crear y activar entorno virtual:
-    py -3.11 -m venv venv
+    python3 -3.11 -m venv venv
     .\venv\Scripts\Activate
+### MAC
+    python3 -m venv venv
+    source venv/bin/activate
 
     2. instalar dependencias:
-    pip install -r requirements.txt
+    pip3 install -r requirements.txt
 
     3. Verificar que el dataset esté en la carpeta:
     data/aapl.us.txt

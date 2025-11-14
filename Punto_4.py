@@ -1,22 +1,20 @@
 # ===========================================================
-#   PUNTO 4 - Red Apilada (Stacked LSTM / GRU)
-#   Combinación de dos capas recurrentes para mejorar desempeño
-#   Basado en los flujos de Puntos 2 (LSTM) y 3 (GRU)
+#   PUNTO 4 - Red recurrente apilada (Stacked LSTM)
 # ===========================================================
 
-import os
-import numpy as np
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error
+import math
+from tensorflow.keras.optimizers import Adam
 
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers, callbacks
-
-# ------------------------------
-# 1) Utilidades del Punto 1
-# ------------------------------
+# ===========================================================
+#   1. Cargar datos (del Punto 1)
+# ===========================================================
 
 def load_data(path):
     df = pd.read_csv(
@@ -26,24 +24,30 @@ def load_data(path):
         on_bad_lines='skip',
         engine='python'
     )
+
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce", dayfirst=True)
+
     numeric_cols = ["Open", "High", "Low", "Close", "Volume", "OpenInt"]
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=["Date"] + numeric_cols)
+
+    df = df.dropna()
     df = df[df["High"] < 1000]
-    df = df[df["Low"]  < 1000]
+    df = df[df["Low"] < 1000]
     df = df.sort_values("Date").reset_index(drop=True)
     return df
+
 
 def add_mid_column(df):
     df["Mid"] = (df["High"] + df["Low"]) / 2.0
     return df
 
+
 def scale_data(series):
     scaler = MinMaxScaler()
     scaled = scaler.fit_transform(series.reshape(-1, 1))
     return scaled, scaler
+
 
 def create_sliding_windows(data, window_size):
     X, y = [], []
@@ -52,132 +56,142 @@ def create_sliding_windows(data, window_size):
         y.append(data[i, 0])
     X = np.array(X)
     y = np.array(y)
-    X = np.reshape(X, (X.shape[0], X.shape[1], 1))
-    return X, y
+    return X.reshape(X.shape[0], X.shape[1], 1), y
+
 
 def split_train_val_test(X, y):
     train_size = int(len(X) * 0.70)
-    val_size   = int(len(X) * 0.15)
-    X_train = X[:train_size];             y_train = y[:train_size]
-    X_val   = X[train_size:train_size+val_size]; y_val   = y[train_size:train_size+val_size]
-    X_test  = X[train_size+val_size:];    y_test  = y[train_size+val_size:]
+    val_size = int(len(X) * 0.15)
+    X_train = X[:train_size]
+    y_train = y[:train_size]
+    X_val = X[train_size:train_size + val_size]
+    y_val = y[train_size:train_size + val_size]
+    X_test = X[train_size + val_size:]
+    y_test = y[train_size + val_size:]
     return X_train, y_train, X_val, y_val, X_test, y_test
 
-# ------------------------------
-# 2) Métricas
-# ------------------------------
 
-def mae(y_true, y_pred): return np.mean(np.abs(y_true - y_pred))
-def rmse(y_true, y_pred): return np.sqrt(np.mean((y_true - y_pred)**2))
-def mape(y_true, y_pred, eps=1e-8): return np.mean(np.abs((y_true - y_pred) / (y_true + eps))) * 100.0
+# ===========================================================
+#   2. Preparación del dataset
+# ===========================================================
 
-# ------------------------------
-# 3) Modelo Apilado (Stacked)
-# ------------------------------
+df = load_data("data/aapl.us.txt")
+df = add_mid_column(df)
+mid_scaled, scaler = scale_data(df["Mid"].values)
 
-def build_stacked_model(input_shape, units_1=64, units_2=32, dropout=0.2, mode="LSTM-GRU"):
-    model = keras.Sequential()
-    if mode == "LSTM-LSTM":
-        model.add(layers.LSTM(units_1, return_sequences=True, recurrent_dropout=dropout, input_shape=input_shape))
-        model.add(layers.LSTM(units_2, recurrent_dropout=dropout))
-    elif mode == "LSTM-GRU":
-        model.add(layers.LSTM(units_1, return_sequences=True, recurrent_dropout=dropout, input_shape=input_shape))
-        model.add(layers.GRU(units_2, recurrent_dropout=dropout))
-    elif mode == "GRU-GRU":
-        model.add(layers.GRU(units_1, return_sequences=True, recurrent_dropout=dropout, input_shape=input_shape))
-        model.add(layers.GRU(units_2, recurrent_dropout=dropout))
-    else:
-        raise ValueError("Modo no soportado. Usa: 'LSTM-LSTM', 'LSTM-GRU', 'GRU-GRU'.")
+N_STEPS = 60
+X, y = create_sliding_windows(mid_scaled, N_STEPS)
 
-    model.add(layers.Dense(1))
-    model.compile(optimizer="rmsprop", loss="mse", metrics=["mae"])
-    return model
+X_train, y_train, X_val, y_val, X_test, y_test = split_train_val_test(X, y)
 
-# ------------------------------
-# 4) Entrenamiento y Evaluación
-# ------------------------------
+print("\nDataset preparado")
+print("Train:", X_train.shape)
+print("Val:", X_val.shape)
+print("Test:", X_test.shape)
 
-def train_and_evaluate(config, X_train, y_train, X_val, y_val, X_test, y_test, scaler, exp_id):
-    u1, u2, ep, bs, dp, mode = config.values()
 
-    model = build_stacked_model(X_train.shape[1:], units_1=u1, units_2=u2, dropout=dp, mode=mode)
-    es = callbacks.EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True)
-    ckpt = f"stacked_best_exp{exp_id}.keras"
-    mc = callbacks.ModelCheckpoint(ckpt, monitor="val_loss", save_best_only=True)
+# ===========================================================
+#   3. Construcción del modelo LSTM apilado
+# ===========================================================
 
-    history = model.fit(
-        X_train, y_train,
-        validation_data=(X_val, y_val),
-        epochs=ep,
-        batch_size=bs,
-        callbacks=[es, mc],
-        verbose=0
+def build_stacked_lstm(neurons=64, dropout=False):
+    model = Sequential()
+
+    # Primera capa LSTM
+    model.add(LSTM(
+        neurons,
+        return_sequences=True,
+        recurrent_dropout=0.2 if dropout else 0.0,
+        input_shape=(X_train.shape[1], 1)
+    ))
+
+    # Segunda capa LSTM apilada
+    model.add(LSTM(
+        neurons,
+        return_sequences=False,
+        recurrent_dropout=0.2 if dropout else 0.0
+    ))
+
+    # Capa final densa
+    model.add(Dense(1))
+
+    model.compile(
+        optimizer=Adam(learning_rate=0.0003),
+        loss="mse"
     )
 
-    model = keras.models.load_model(ckpt)
-    y_pred_scaled = model.predict(X_test, verbose=0)
-    y_test_scaled = y_test.reshape(-1, 1)
+    return model
 
-    y_pred = scaler.inverse_transform(y_pred_scaled).ravel()
-    y_true = scaler.inverse_transform(y_test_scaled).ravel()
 
-    _mae, _rmse, _mape = mae(y_true, y_pred), rmse(y_true, y_pred), mape(y_true, y_pred)
+# ===========================================================
+#   4. Entrenamiento
+# ===========================================================
 
-    os.makedirs("resultados_p4", exist_ok=True)
+print("\n===== ENTRENANDO MODELO APILADO (STACKED LSTM) =====")
 
-    # Gráfica de pérdida
-    plt.figure(figsize=(7,5))
-    plt.plot(history.history["loss"], label="Train")
-    plt.plot(history.history["val_loss"], label="Val")
-    plt.title(f"Pérdida - {mode} (u1={u1}, u2={u2}, ep={ep}, bs={bs})")
-    plt.xlabel("Épocas"); plt.ylabel("MSE")
-    plt.legend(); plt.grid(alpha=0.3); plt.tight_layout()
-    loss_fig = f"resultados_p4/exp{exp_id}_loss.png"
-    plt.savefig(loss_fig, dpi=300); plt.close()
+config = {
+    "neurons": 64,
+    "epochs": 20,
+    "batch": 64,
+    "dropout": False
+}
 
-    # Gráfica Predicción vs Real
-    N = min(200, len(y_true))
-    plt.figure(figsize=(9,5))
-    plt.plot(range(N), y_true[-N:], label="Real")
-    plt.plot(range(N), y_pred[-N:], label="Predicción")
-    plt.title(f"Predicción vs Real - {mode} (u1={u1}, u2={u2}, ep={ep})")
-    plt.xlabel("Tiempo"); plt.ylabel("Precio promedio (USD)")
-    plt.legend(); plt.grid(alpha=0.3); plt.tight_layout()
-    pred_fig = f"resultados_p4/exp{exp_id}_pred.png"
-    plt.savefig(pred_fig, dpi=300); plt.close()
+print("Configuración utilizada:", config)
 
-    return {"exp_id": exp_id, "mode": mode, "u1": u1, "u2": u2, "ep": ep, "bs": bs, "dp": dp,
-            "MAE": _mae, "RMSE": _rmse, "MAPE(%)": _mape,
-            "loss_fig": loss_fig, "pred_fig": pred_fig, "ckpt": ckpt}
+model = build_stacked_lstm(
+    neurons=config["neurons"],
+    dropout=config["dropout"]
+)
 
-# ------------------------------
-# 5) Main
-# ------------------------------
+history = model.fit(
+    X_train, y_train,
+    validation_data=(X_val, y_val),
+    epochs=config["epochs"],
+    batch_size=config["batch"],
+    verbose=1
+)
 
-if __name__ == "__main__":
-    np.random.seed(42)
-    tf.random.set_seed(42)
+# ===========================================================
+#   5. Gráficas
+# ===========================================================
 
-    df = add_mid_column(load_data("data/aapl.us.txt"))
-    mid_scaled, scaler = scale_data(df["Mid"].values)
-    X, y = create_sliding_windows(mid_scaled, 60)
-    X_train, y_train, X_val, y_val, X_test, y_test = split_train_val_test(X, y)
+def plot_loss(history):
+    plt.figure(figsize=(8,5))
+    plt.plot(history.history["loss"], label="Train Loss", linewidth=2)
+    plt.plot(history.history["val_loss"], label="Validation Loss", linewidth=2)
+    plt.title("Curva de pérdida - Stacked LSTM")
+    plt.xlabel("Iteraciones")
+    plt.ylabel("Loss (MSE)")
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.show()
 
-    # Configuraciones
-    configs = [
-        {"u1": 64, "u2": 32, "ep": 30, "bs": 32, "dp": 0.2, "mode": "LSTM-LSTM"},
-        {"u1": 64, "u2": 32, "ep": 30, "bs": 32, "dp": 0.2, "mode": "LSTM-GRU"},
-        {"u1": 32, "u2": 16, "ep": 40, "bs": 64, "dp": 0.3, "mode": "GRU-GRU"},
-    ]
 
-    resultados = []
-    for i, cfg in enumerate(configs, start=1):
-        print(f"\n=== Experimento {i}/{len(configs)}: {cfg['mode']} ===")
-        res = train_and_evaluate(cfg, X_train, y_train, X_val, y_val, X_test, y_test, scaler, exp_id=i)
-        print(f"-> MAE: {res['MAE']:.4f} | RMSE: {res['RMSE']:.4f} | MAPE: {res['MAPE(%)']:.2f}%")
-        resultados.append(res)
+def plot_predictions(y_real, y_pred):
+    plt.figure(figsize=(10,5))
+    plt.plot(y_real, label="Real", linewidth=2)
+    plt.plot(y_pred, label="Predicción (Stacked LSTM)", linewidth=2)
+    plt.title("Predicción vs Real - Modelo LSTM Apilado")
+    plt.xlabel("Tiempo")
+    plt.ylabel("MID Normalizado")
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.show()
 
-    df_res = pd.DataFrame(resultados).sort_values(by="RMSE", ascending=True)
-    df_res.to_csv("resultados_p4/ranking_resultados_p4.csv", index=False)
-    print("\n===== Ranking final (Stacked) =====")
-    print(df_res[["exp_id","mode","u1","u2","ep","bs","dp","MAE","RMSE","MAPE(%)"]])
+
+plot_loss(history)
+
+y_pred = model.predict(X_test)
+rmse = math.sqrt(mean_squared_error(y_test, y_pred))
+
+plot_predictions(y_test, y_pred)
+
+
+# ===========================================================
+#   6. Resultados finales
+# ===========================================================
+
+print("\n==============================")
+print("  RESULTADOS DEL MODELO APILADO")
+print("==============================")
+print(f"RMSE final: {rmse}")
